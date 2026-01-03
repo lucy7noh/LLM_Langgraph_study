@@ -3,4 +3,6 @@ langchain-core>=0.1.0
 langgraph>=0.0.20
 langchain-google-genai>=1.0.0
 python-dotenv>=1.0.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
 

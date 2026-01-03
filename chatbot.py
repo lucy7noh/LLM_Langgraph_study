@@ -55,34 +55,110 @@ def create_chatbot_graph():
 app = create_chatbot_graph()
 
 
-if __name__ == "__main__":
-    # 사용 가능한 모델 확인 (선택사항)
-    try:
-        from google import genai
-        client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-        models = client.models.list()
-        print("사용 가능한 모델:")
-        for model in models:
-            if hasattr(model, 'name'):
-                print(f"  - {model.name}")
-    except Exception as e:
-        print(f"모델 목록 확인 실패: {e}")
-    
-    print("\n" + "=" * 50)
-    print("LangGraph + Gemini (LangChain) 실행")
-    print("=" * 50)
+# FastAPI 설정
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, List
+import uvicorn
 
-    inputs = {
-        "messages": [
-            HumanMessage(content="1 + 1 답이 뭐야?")
-        ]
+# FastAPI 앱 생성
+api_app = FastAPI(
+    title="Proovy Chatbot API",
+    description="LangGraph + Gemini 기반 챗봇 API",
+    version="1.0.0"
+)
+
+# CORS 설정 (프론트엔드 연동을 위해)
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 프로덕션에서는 특정 도메인만 허용
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 요청/응답 모델
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None  # 대화 세션 관리용
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+
+# 세션별 대화 상태 저장 (실제로는 DB 사용 권장)
+chat_sessions = {}
+
+@api_app.get("/")
+async def root():
+    """API 상태 확인"""
+    return {
+        "status": "running",
+        "service": "Proovy Chatbot API",
+        "version": "1.0.0"
     }
 
-    print(f"\n사용자: {inputs['messages'][0].content}\n")
-    print("채팅봇: ", end="", flush=True)
+@api_app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """
+    챗봇과 대화하는 엔드포인트
+    
+    - message: 사용자 메시지
+    - session_id: 대화 세션 ID (없으면 새로 생성)
+    """
+    try:
+        # 세션 관리
+        session_id = request.session_id or f"session_{len(chat_sessions)}"
+        
+        if session_id not in chat_sessions:
+            chat_sessions[session_id] = {"messages": []}
+        
+        # 사용자 메시지를 HumanMessage로 변환
+        user_message = HumanMessage(content=request.message)
+        chat_sessions[session_id]["messages"].append(user_message)
+        
+        # LangGraph 실행
+        result = app.invoke({
+            "messages": chat_sessions[session_id]["messages"]
+        })
+        
+        # AI 응답 추출
+        ai_message = result["messages"][-1]
+        response_text = ai_message.content
+        
+        # 세션 상태 업데이트 (대화 히스토리 유지)
+        chat_sessions[session_id] = result
+        
+        return ChatResponse(
+            response=response_text,
+            session_id=session_id
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"챗봇 처리 중 오류 발생: {str(e)}")
 
-    result = app.invoke(inputs)
-    ai_message = result["messages"][-1]
-    print(ai_message.content)
+@api_app.delete("/chat/{session_id}")
+async def clear_session(session_id: str):
+    """대화 세션 초기화"""
+    if session_id in chat_sessions:
+        del chat_sessions[session_id]
+        return {"message": "세션이 삭제되었습니다."}
+    return {"message": "세션을 찾을 수 없습니다."}
 
-    print("\n" + "=" * 50)
+@api_app.get("/health")
+async def health_check():
+    """헬스 체크"""
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    # 서버 실행
+    # 방법 1: reload 없이 실행 (경고 없음)
+    uvicorn.run(
+        api_app,
+        host="0.0.0.0",
+        port=8000
+    )
+    
+    # 방법 2: reload 기능을 사용하려면 터미널에서 실행:
+    # uvicorn chatbot:api_app --reload --host 0.0.0.0 --port 8000
